@@ -77,7 +77,8 @@ try {
     2223:"MuMuNxDevice.exe,NemuService.exe,NemuPlayer.exe",//明日方舟国际服
     11006:"How to Fish.exe",//渔力全开
     4265:"AbioticFactor-Win64-Shipping.exe,AbioticFactor.exe",//无机因素
-    5285:"Buckshot Roulette.exe"//Buckshot Roulette
+    5285:"Buckshot Roulette.exe",//Buckshot Roulette
+    1213:"osu!.exe"
   };
   const ExcludedGameIDs = [109, 437, 274, 1921, 1342, 860, 2529, 4371]; //steam epic 育碧uplay eaapp  rockstar GOG 远程同乐 碧蓝幻想
   const UI_STATES = {
