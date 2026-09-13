@@ -140,7 +140,11 @@ class Program
     private static async Task<bool> ApplyPatchAsync(string asarPath, byte[] embeddedJsBytes)
     {
         string? tempDir = null;
-        string patchedAsarTempPath = asarPath + ".patched.tmp";
+        string asarDirectory = Path.GetDirectoryName(asarPath) ?? AppContext.BaseDirectory;
+        string patchedAsarTempPath = Path.Combine(
+            asarDirectory,
+            $"{Path.GetFileNameWithoutExtension(asarPath)}.patched.tmp.asar"
+        );
 
         try
         {
@@ -175,7 +179,7 @@ class Program
             Console.WriteLine("正在写入 EXE 内置插件...");
             await File.WriteAllBytesAsync(fileToReplacePath, embeddedJsBytes);
 
-            // 先打包到临时文件，成功后再覆盖正式 app.asar，避免打包中途失败破坏客户端。
+            // 先打包到临时 .asar，成功后再覆盖正式 app.asar，避免打包中途失败破坏客户端。
             if (File.Exists(patchedAsarTempPath))
             {
                 File.Delete(patchedAsarTempPath);
