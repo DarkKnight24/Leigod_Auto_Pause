@@ -77,7 +77,7 @@ resources\app.asar
 1. 读取 EXE 内置的 `main.js`；
 2. 备份当前 `resources\app.asar` 为 `app.asar.bak`；
 3. 在临时目录解包并注入插件；
-4. 先生成 `app.asar.patched.tmp`；
+4. 先生成 `app.patched.tmp.asar`；
 5. 只有打包成功后才覆盖正式 `app.asar`；
 6. 保存已注入文件与插件的 SHA-256，用于后续判断是否需要重新打补丁。
 
@@ -97,5 +97,7 @@ resources\app.asar
 ```
 
 因此运行时不会因为上游仓库内容突然变化而自动执行新的 JS。
+
+编译产物在读取内置 JS 时还会移除原插件日志中 `account_token` 前缀片段的输出；token 本身仍只用于原有的雷神官方暂停接口逻辑。
 
 > 注意：插件自身为了实现功能，仍会访问雷神官方 API；这里移除的是“启动器从第三方代码仓库动态下载并执行插件代码”的供应链风险。
