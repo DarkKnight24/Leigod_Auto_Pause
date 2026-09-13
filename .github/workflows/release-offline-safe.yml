@@ -28,8 +28,11 @@ jobs:
           gh release view $env:RELEASE_TAG *> $null
           if ($LASTEXITCODE -eq 0) {
             'exists=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            $sourceCommit = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:RELEASE_TAG" --jq '.target_commitish'
+            "source_commit=$sourceCommit" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           } else {
             'exists=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "source_commit=$env:GITHUB_SHA" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
           exit 0
 
@@ -94,7 +97,8 @@ jobs:
 
           > 此版本移除的是第三方代码仓库动态下载带来的供应链风险。插件自身为了实现自动暂停功能，仍会访问雷神官方 API，并修改雷神客户端的 `app.asar`。
           '@
-          $notes += "`r`n`r`nSource commit: $env:GITHUB_SHA`r`n"
+          $sourceCommit = '${{ steps.release_check.outputs.source_commit }}'
+          $notes += "`r`n`r`nSource commit: $sourceCommit`r`n"
           Set-Content -Path '.\RELEASE_NOTES.md' -Value $notes -Encoding utf8
 
       - name: Create or update GitHub Release
