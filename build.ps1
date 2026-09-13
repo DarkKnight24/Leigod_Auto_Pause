@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Project = Join-Path $Root "src\Leigod_Auto_Pause\Leigod_Auto_Pause.csproj"
 $Output = Join-Path $Root "publish"
+$Runtime = "win-x64"
 
 if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
     throw ".NET SDK 未安装或 dotnet 不在 PATH 中。请先安装 .NET 8 SDK。"
@@ -13,16 +14,16 @@ if (Test-Path $Output) {
     Remove-Item $Output -Recurse -Force
 }
 
-Write-Host "[2/3] Restoring dependencies..."
-dotnet restore $Project
+Write-Host "[2/3] Restoring dependencies for $Runtime..."
+dotnet restore $Project -r $Runtime
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "[3/3] Publishing self-contained win-x64 single-file launcher..."
+Write-Host "[3/3] Publishing self-contained $Runtime single-file launcher..."
 dotnet publish $Project `
     -c Release `
-    -r win-x64 `
+    -r $Runtime `
     --self-contained true `
     -p:PublishSingleFile=true `
     -o $Output `
