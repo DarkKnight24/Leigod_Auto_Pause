@@ -19,18 +19,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check existing release
+        id: release_check
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            'exists=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            'exists=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+          exit 0
+
       - name: Setup .NET 8
+        if: steps.release_check.outputs.exists != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
       - name: Restore
+        if: steps.release_check.outputs.exists != 'true'
         run: dotnet restore $env:PROJECT -r win-x64
 
       - name: Publish self-contained single-file EXE
+        if: steps.release_check.outputs.exists != 'true'
         run: dotnet publish $env:PROJECT -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o .\publish --no-restore
 
       - name: Package and generate checksums
+        if: steps.release_check.outputs.exists != 'true'
         shell: pwsh
         run: |
           $exe = '.\publish\Leigod_Auto_Pause.exe'
@@ -46,7 +64,10 @@ jobs:
             "$zipHash  Leigod_Auto_Pause_offline-safe_win-x64.zip"
           ) | Set-Content -Path '.\SHA256SUMS.txt' -Encoding ascii
 
-          @"
+      - name: Generate release notes
+        shell: pwsh
+        run: |
+          $notes = @'
           ## Offline Safe 安全版
 
           这是 `DarkKnight24/Leigod_Auto_Pause` 的离线安全构建。
@@ -69,23 +90,28 @@ jobs:
 
           ### 使用方式
 
-          将 `Leigod_Auto_Pause.exe` 放到雷神加速器安装目录（与 `leigod_launcher.exe` 同级，目录内存在 `resources\\app.asar`），然后以管理员身份运行。
+          将 `Leigod_Auto_Pause.exe` 放到雷神加速器安装目录（与 `leigod_launcher.exe` 同级，目录内存在 `resources\app.asar`），然后以管理员身份运行。
 
           > 此版本移除的是第三方代码仓库动态下载带来的供应链风险。插件自身为了实现自动暂停功能，仍会访问雷神官方 API，并修改雷神客户端的 `app.asar`。
+          '@
+          $notes += "`r`n`r`nSource commit: $env:GITHUB_SHA`r`n"
+          Set-Content -Path '.\RELEASE_NOTES.md' -Value $notes -Encoding utf8
 
-          Source commit: $env:GITHUB_SHA
-          "@ | Set-Content -Path '.\RELEASE_NOTES.md' -Encoding utf8
-
-      - name: Create GitHub Release
+      - name: Create or update GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:RELEASE_TAG `
-            '.\publish\Leigod_Auto_Pause.exe' `
-            '.\Leigod_Auto_Pause_offline-safe_win-x64.zip' `
-            '.\SHA256SUMS.txt' `
-            --target $env:GITHUB_SHA `
-            --title 'Leigod Auto Pause — Offline Safe' `
-            --notes-file '.\RELEASE_NOTES.md' `
-            --verify-tag=false
+          if ('${{ steps.release_check.outputs.exists }}' -eq 'true') {
+            gh release edit $env:RELEASE_TAG `
+              --title 'Leigod Auto Pause — Offline Safe' `
+              --notes-file '.\RELEASE_NOTES.md'
+          } else {
+            gh release create $env:RELEASE_TAG `
+              '.\publish\Leigod_Auto_Pause.exe' `
+              '.\Leigod_Auto_Pause_offline-safe_win-x64.zip' `
+              '.\SHA256SUMS.txt' `
+              --target $env:GITHUB_SHA `
+              --title 'Leigod Auto Pause — Offline Safe' `
+              --notes-file '.\RELEASE_NOTES.md'
+          }
