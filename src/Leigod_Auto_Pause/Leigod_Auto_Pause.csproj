@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Content Include="11.ico" />
+    <EmbeddedResource Include="..\..\main.js" LogicalName="Leigod_Auto_Pause.Plugin.main.js" />
   </ItemGroup>
 
   <ItemGroup>

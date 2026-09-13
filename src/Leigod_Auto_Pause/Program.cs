@@ -1,73 +1,25 @@
-
 using AsarSharp;
-using System.Security.Principal;
 using SettingManager;
 using System.Diagnostics;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Security.Principal;
+using System.Text;
+using System.Text.RegularExpressions;
 
 class Program
 {
+    private const string FileToReplace = "dist/main/main.js";
+    private const string EmbeddedJsResourceName = "Leigod_Auto_Pause.Plugin.main.js";
+
     [System.Runtime.InteropServices.DllImport("kernel32.dll")]
     private static extern bool AllocConsole();
+
     [System.Runtime.InteropServices.DllImport("kernel32.dll")]
     private static extern bool FreeConsole();
-    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-    private static extern IntPtr GetConsoleWindow();
 
     [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     public static extern int MessageBox(IntPtr hWnd, string text, string caption, uint type);
-    static string fileToReplace = "dist/main/main.js";
-
-
-    static readonly string[] jsDownloadUrls =
-   {
-        "https://gitee.com/assortest/Leigod_Auto_Pause/raw/main/main.js", // 主节点
-        "https://raw.githubusercontent.com/assortest/Leigod_Auto_Pause/refs/heads/main/main.js"          // 备用节点
-    };
-
-    public static async Task<byte[]> DownloadJsFileAsync()
-    { //用于拉取文件内容
-        using (var client = new HttpClient())
-        {
-            client.DefaultRequestHeaders.Add("User-Agent", "Leigod Auto Pause Patch Tool");
-            client.Timeout = TimeSpan.FromSeconds(10); //设置一个超时时间，防止长时间等待
-            foreach (var url in jsDownloadUrls)
-            {
-                try
-                {
-                    if(GetConsoleWindow() != IntPtr.Zero)
-                    {
-                        Console.WriteLine($"尝试从此处下载: {url}"); // 如需输出可取消注释
-
-                    }
-                    
-                    byte[] fileBytes = await client.GetByteArrayAsync(url); //采用二进制防止编码问题
-                    if (fileBytes != null && fileBytes.Length > 0)
-                    {
-                        return fileBytes; // 成功下载，返回文件内容
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (GetConsoleWindow() != IntPtr.Zero)
-                    {
-                        Console.WriteLine($"从 {url} 下载文件失败: {ex.Message}");
-
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine(ex.ToString());
-                        Console.ResetColor();
-                    }
-                        
-
-                }
-            }
-            throw new Exception("所有下载节点均失败，请检查网络连接或稍后再试。");
-
-
-
-        }
-    }
-
-
 
     static async Task Main(string[] args)
     {
@@ -83,19 +35,23 @@ class Program
                 return;
             }
 
-            string currentDirctory = currentDirctory = AppContext.BaseDirectory;//获取当前程序运行目录
-            string asarpath = asarpath = Path.Combine(currentDirctory, "resources", "app.asar");//获取app.asar文件路径
+            string currentDirectory = AppContext.BaseDirectory;
+            string asarPath = Path.Combine(currentDirectory, "resources", "app.asar");
+            byte[] embeddedJsBytes = GetEmbeddedJsBytes();
 
-            if (await NeedUpdate(asarpath))
+            if (NeedUpdate(asarPath, embeddedJsBytes))
             {
                 AllocConsole();
-                Console.WriteLine("检查到第一次运行或者程序更新。正在获取插件。");
-                bool patchSuccess = await applyPatch(asarpath);
+                Console.WriteLine("检测到首次运行、雷神客户端更新或本地插件版本变化。");
+                Console.WriteLine("正在使用 EXE 内置的 main.js 应用离线补丁...");
+
+                bool patchSuccess = await ApplyPatchAsync(asarPath, embeddedJsBytes);
                 if (patchSuccess)
                 {
                     Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("正在试图启动雷神加速器...");
-                    LaunchLeigod(currentDirctory);
+                    Console.WriteLine("离线补丁应用成功，正在启动雷神加速器...");
+                    Console.ResetColor();
+                    LaunchLeigod(currentDirectory);
                 }
                 else
                 {
@@ -104,192 +60,275 @@ class Program
                     Console.ResetColor();
                     Console.ReadKey();
                 }
+
                 FreeConsole();
             }
             else
             {
-                LaunchLeigod(currentDirctory);
+                LaunchLeigod(currentDirectory);
             }
         }
         catch (Exception ex)
         {
             string errorMessage = $"程序运行时发生未知错误：\n\n{ex.Message}";
             MessageBox(IntPtr.Zero, errorMessage, "致命错误", 0x10);
-
-
         }
     }
 
-    public static async Task<bool> applyPatch(string asarpath)
+    private static byte[] GetEmbeddedJsBytes()
     {
-        string tempDir = null;
-        //检查替换文件打包逻辑
+        Assembly assembly = Assembly.GetExecutingAssembly();
+        using Stream? stream = assembly.GetManifestResourceStream(EmbeddedJsResourceName);
+        if (stream is null)
+        {
+            throw new InvalidOperationException(
+                $"未找到内置插件资源 {EmbeddedJsResourceName}。请确认 main.js 已作为 EmbeddedResource 编译进程序。"
+            );
+        }
+
+        using var memory = new MemoryStream();
+        stream.CopyTo(memory);
+
+        // 不再把 account_token 的任何片段写入日志。
+        // 这里在构建产物读取内置 JS 时做一次最小化安全处理，避免改变上游插件的其他行为。
+        string script = Encoding.UTF8.GetString(memory.ToArray());
+        script = Regex.Replace(
+            script,
+            @"writeLog\(\s*`\[Token\] Successfully obtained token\. The token is \$\{GLOBAL_USER_TOKEN\.substring\(\s*0,\s*10,\s*\)\}\.\.\.`,\s*\);",
+            "writeLog(\"[Token] Successfully obtained token.\");",
+            RegexOptions.CultureInvariant
+        );
+
+        return Encoding.UTF8.GetBytes(script);
+    }
+
+    private static bool NeedUpdate(string asarPath, byte[] embeddedJsBytes)
+    {
+        if (!File.Exists(asarPath))
+        {
+            throw new FileNotFoundException(
+                "未找到 resources\\app.asar，请将本程序放到雷神加速器安装目录中运行。",
+                asarPath
+            );
+        }
+
+        AppSettings? settings = Manager.Load();
+        if (settings is null || string.IsNullOrWhiteSpace(settings.PatchedAsarHash))
+        {
+            return true;
+        }
+
+        string currentAsarHash = GetFileSha256(asarPath);
+        if (!string.Equals(
+                currentAsarHash,
+                settings.PatchedAsarHash,
+                StringComparison.OrdinalIgnoreCase
+            ))
+        {
+            // app.asar 被雷神升级或被其他程序修改，需要重新打补丁。
+            return true;
+        }
+
+        string embeddedJsHash = GetBytesSha256(embeddedJsBytes);
+        return !string.Equals(
+            embeddedJsHash,
+            settings.AppliedJsHash,
+            StringComparison.OrdinalIgnoreCase
+        );
+    }
+
+    private static async Task<bool> ApplyPatchAsync(string asarPath, byte[] embeddedJsBytes)
+    {
+        string? tempDir = null;
+        string asarDirectory = Path.GetDirectoryName(asarPath) ?? AppContext.BaseDirectory;
+        string patchedAsarTempPath = Path.Combine(
+            asarDirectory,
+            $"{Path.GetFileNameWithoutExtension(asarPath)}.patched.tmp.asar"
+        );
+
         try
         {
-            //如果需要更新，执行更新逻辑 并且显示控制台窗口
-
-            Console.WriteLine($"正在查找目标文件");
-            Thread.Sleep(1000);
-            if (!File.Exists(asarpath))
+            Console.WriteLine("正在检查目标文件...");
+            if (!File.Exists(asarPath))
             {
-                throw new FileNotFoundException("未找到文件,请吧当前软件放入雷神加速器的根目录！");
+                throw new FileNotFoundException(
+                    "未找到 resources\\app.asar，请将本程序放到雷神加速器安装目录中运行。",
+                    asarPath
+                );
             }
 
-            Console.WriteLine("找到文件 app.asar ！");
+            string currentAsarHash = GetFileSha256(asarPath);
+            AppSettings? previousSettings = Manager.Load();
+            BackupCurrentAsarIfNeeded(asarPath, currentAsarHash, previousSettings);
 
-            tempDir = Path.Combine(Path.GetTempPath(), "AsarPatcher_" + Path.GetRandomFileName()); //创建临时目录带AsarPatcher_前缀
-            Directory.CreateDirectory(tempDir); //创建目录
-            Console.WriteLine("正在解压 app.asar 文件...");
+            tempDir = Path.Combine(Path.GetTempPath(), "AsarPatcher_" + Path.GetRandomFileName());
+            Directory.CreateDirectory(tempDir);
 
-            var extractor = new AsarExtractor(asarpath, tempDir);
-
+            Console.WriteLine("正在解压 app.asar...");
+            var extractor = new AsarExtractor(asarPath, tempDir);
             extractor.Extract();
             extractor.Dispose();
 
-            Console.WriteLine("目标解压完成");
-
-            //处理下载文件
-            Console.WriteLine("正在拉取文件...");
-            byte[] fileBytes = await DownloadJsFileAsync();
-            string fileToreplacePath = Path.Combine(tempDir, fileToReplace);
-            await File.WriteAllBytesAsync(fileToreplacePath, fileBytes);//替换文件
-            Console.WriteLine("文件下载并替换成功！");
-
-
-
-            string backupAsarPath = asarpath + ".bak";
-            if (!(File.Exists(backupAsarPath)))
-            {//如果不存在备份文件则创建备份
-                File.Copy(asarpath, backupAsarPath, true);//备份原始文件
-                Console.WriteLine("正在备份原始文件");
+            string fileToReplacePath = Path.Combine(tempDir, FileToReplace);
+            string? replaceDirectory = Path.GetDirectoryName(fileToReplacePath);
+            if (!string.IsNullOrEmpty(replaceDirectory))
+            {
+                Directory.CreateDirectory(replaceDirectory);
             }
-            Console.WriteLine("正在重新打包文件");
 
-            var archiver = new AsarArchiver(tempDir, asarpath);
+            Console.WriteLine("正在写入 EXE 内置插件...");
+            await File.WriteAllBytesAsync(fileToReplacePath, embeddedJsBytes);
 
+            // 先打包到临时 .asar，成功后再覆盖正式 app.asar，避免打包中途失败破坏客户端。
+            if (File.Exists(patchedAsarTempPath))
+            {
+                File.Delete(patchedAsarTempPath);
+            }
+
+            Console.WriteLine("正在重新打包 app.asar...");
+            var archiver = new AsarArchiver(tempDir, patchedAsarTempPath);
             archiver.Archive();
-            archiver.Dispose();//我服了这里需要手动释放否则会文件被占用 弄死我了
-            Console.WriteLine("打包完成！");
-            Console.WriteLine("正在用新文件覆盖原文件...");
-            Console.WriteLine("操作成功！");
-            Console.WriteLine("正在更新状态信息...");
-            Thread.Sleep(1000); //等待1秒 防止archiver没释放
-            string newAsarHash = GetFileSha256(asarpath);
-            string newJsHash = GetBytesSha256(fileBytes);
+            archiver.Dispose();
 
-            var settings = new AppSettings
+            if (!File.Exists(patchedAsarTempPath))
+            {
+                throw new IOException("补丁打包完成后未找到临时 app.asar 文件。未覆盖原文件。");
+            }
+
+            File.Copy(patchedAsarTempPath, asarPath, true);
+
+            string newAsarHash = GetFileSha256(asarPath);
+            string newJsHash = GetBytesSha256(embeddedJsBytes);
+
+            Manager.Save(new AppSettings
             {
                 PatchedAsarHash = newAsarHash,
                 AppliedJsHash = newJsHash
-            };
-            Manager.Save(settings);
-            Console.WriteLine("状态信息更新完毕！");
+            });
 
+            Console.WriteLine($"插件 SHA256: {newJsHash}");
+            Console.WriteLine("状态信息更新完毕。");
+            return true;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"处理过程中发生未知错误: {ex.Message}");
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"处理过程中发生错误: {ex.Message}");
+            Console.ResetColor();
             return false;
         }
         finally
         {
-            if (tempDir != null && Directory.Exists(tempDir))
+            if (tempDir is not null && Directory.Exists(tempDir))
             {
-                Directory.Delete(tempDir, true); //确保删除临时目录
-                Console.WriteLine("清理目录");
+                try
+                {
+                    Directory.Delete(tempDir, true);
+                }
+                catch
+                {
+                    // 临时目录清理失败不影响补丁结果。
+                }
+            }
 
+            if (File.Exists(patchedAsarTempPath))
+            {
+                try
+                {
+                    File.Delete(patchedAsarTempPath);
+                }
+                catch
+                {
+                    // 临时文件清理失败不影响补丁结果。
+                }
             }
         }
-
-        return true;
     }
 
-
-    public static async Task<bool> NeedUpdate(string asarpath)
+    private static void BackupCurrentAsarIfNeeded(
+        string asarPath,
+        string currentAsarHash,
+        AppSettings? previousSettings
+    )
     {
-        //这里可以添加实际的版本检查逻辑，例如从服务器获取最新版本号并与当前版本号比较
-        var settings = Manager.Load();
-        if (settings == null || string.IsNullOrEmpty(settings.PatchedAsarHash))
-        { //检查配置文件是否存在不存在就说明需要更新
-            return true;
-        }
-        //计算当前asar文件的哈希值
-        string currentAsarHash = GetFileSha256(asarpath);
-        if (!string.Equals(currentAsarHash, settings.PatchedAsarHash, StringComparison.OrdinalIgnoreCase))
+        string backupPath = asarPath + ".bak";
+        string previousBackupPath = asarPath + ".bak.previous";
+
+        if (!File.Exists(backupPath))
         {
-
-            return true;
+            File.Copy(asarPath, backupPath, false);
+            Console.WriteLine("已创建原始 app.asar 备份: app.asar.bak");
+            return;
         }
 
-        //检查插件是否需要更新
-
-
-        byte[] jsBytes = await DownloadJsFileAsync();
-
-        string remoteJsHash = GetBytesSha256(jsBytes);
-        if (!string.Equals(remoteJsHash, settings.AppliedJsHash, StringComparison.OrdinalIgnoreCase))
+        if (previousSettings is null || string.IsNullOrWhiteSpace(previousSettings.PatchedAsarHash))
         {
-            return true;
+            // 配置丢失时不贸然覆盖已有备份，优先保护现有可恢复副本。
+            Console.WriteLine("已存在 app.asar.bak；由于缺少历史状态信息，本次保留现有备份不覆盖。");
+            return;
         }
 
+        bool currentFileIsPreviouslyPatched = string.Equals(
+            currentAsarHash,
+            previousSettings.PatchedAsarHash,
+            StringComparison.OrdinalIgnoreCase
+        );
 
-        //不需要更新
-        return false;
+        if (currentFileIsPreviouslyPatched)
+        {
+            // 仅插件版本变化，不刷新备份，避免把已经打过补丁的 app.asar 覆盖到备份里。
+            return;
+        }
+
+        // 雷神升级/外部修改了 app.asar。先保留上一代备份，再把当前文件作为新的恢复点。
+        File.Copy(backupPath, previousBackupPath, true);
+        File.Copy(asarPath, backupPath, true);
+        Console.WriteLine("检测到 app.asar 已更新：已刷新 app.asar.bak，并保留 app.asar.bak.previous。");
     }
-
 
     public static string GetFileSha256(string filePath)
-    { //用于哈希计算
-        using var sha256 = System.Security.Cryptography.SHA256.Create();//创建SHA256实例
-        {
-            using var stream = File.OpenRead(filePath);//打开文件流
-            {
-                byte[] hashBytes = sha256.ComputeHash(stream);//计算文件的哈希值
-
-                return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();//将字节数组转换为十六进制字符串
-            }
-        }
+    {
+        using var sha256 = SHA256.Create();
+        using var stream = File.OpenRead(filePath);
+        byte[] hashBytes = sha256.ComputeHash(stream);
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
+
     public static string GetBytesSha256(byte[] data)
     {
-        using var sha256 = System.Security.Cryptography.SHA256.Create();
+        using var sha256 = SHA256.Create();
         byte[] hashBytes = sha256.ComputeHash(data);
-        return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
-
-
 
     public static bool IsRunningAsAdmin()
     {
-        using (WindowsIdentity identity = WindowsIdentity.GetCurrent()) //返回当前Windows用户的标识
-        {
-            WindowsPrincipal principal = new WindowsPrincipal(identity);//将身份包装成可进行角色检查的对象
-            return principal.IsInRole(WindowsBuiltInRole.Administrator);//检查当前用户是否为管理员
-        }
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent();
+        WindowsPrincipal principal = new WindowsPrincipal(identity);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
     }
 
-
-    public static void LaunchLeigod(string resourcesPath)
+    public static void LaunchLeigod(string installDirectory)
     {
         try
         {
-            string leigodExePath = Path.Combine(resourcesPath, "leigod_launcher.exe");
-            if (Path.Exists(leigodExePath))
+            string leigodExePath = Path.Combine(installDirectory, "leigod_launcher.exe");
+            if (!File.Exists(leigodExePath))
             {
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = leigodExePath,
-                    UseShellExecute = true,
-                };
-                Process.Start(startInfo);
+                MessageBox(
+                    IntPtr.Zero,
+                    $"未找到雷神加速器启动程序：\n\n{leigodExePath}\n\n请确保本启动器位于雷神加速器安装目录。",
+                    "启动失败",
+                    0x10
+                );
+                return;
             }
-            else
-            {
-                string errorMessage = $"未找到雷神加速器主程序：\n\n" +
-                    $"\n\n请确保本启动器与 leigod.exe 放置在同一个目录下。";
-                MessageBox(IntPtr.Zero, errorMessage, "启动失败", 0x10);
 
-            }
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = leigodExePath,
+                UseShellExecute = true
+            });
         }
         catch (Exception ex)
         {
@@ -298,5 +337,3 @@ class Program
         }
     }
 }
-
-
